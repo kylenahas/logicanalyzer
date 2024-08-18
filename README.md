@@ -1,11 +1,43 @@
 # LogicAnalyzer
-----
 
 ## Downloads
 You can find all the compiled projects in the [Releases section](https://github.com/gusmanb/logicanalyzer/releases).
 
-Latest version: Release 5.0.0.0, 20/07/2023
+Latest version: Release 5.1.0.0, 05/05/2024
 ----
+
+# Help wanted!
+
+I'm cooking something very special, if you whant to know what it is and help with it, [check this post](https://github.com/gusmanb/logicanalyzer/discussions/127).
+😉
+
+# More boards on the go!
+
+One of the new functionalities of the RP2350 is the capability of having two XIP devices and also has the full device implementation (RP2040 only had READ capabilities implemented). This means that is possible to have (for example) a flash device *and* a PSRAM connected to it.
+Unfortunatelly the Pico 2 does not expose the QSPI pins and they are tied directly to the flash... But there is hope! PiMoroni has developed the PiMoroni Pico Plus 2 which contains 16Mb of flash and 8Mb of PSRAM.
+
+I already have ordered one of these new boards and have some ideas on what could be done with them :D
+Right now the most possible one is this: PSRAM is not fast enough for sampling at a decent speed with many channels, BUT, it is fast enough for something like storing ADC samples, so what I'm going to try is to allow the mix of analog and digital channels. The analog channels will be very slow compared to the digital ones (only 500Ks/s) but it still can be useful to monitor behaviors of things like motors, servos or whatever. As the PSRAM is 8Mb it will allow to store up to 8 seconds of analog data on single channel mode (2 bytes per sample at 500Ks/s is roughly 1Mb/s of data), this, combined with the upgraded onboard ram and the burst mode can be really useful in multiple projects.
+
+Stay tuned for more news!
+
+----
+
+# Exciting news! The Pico 2 is coming soon!
+
+As some of you may know the Pico 2 is being released this month. The new Pico 2 is a very exciting upgrade of the pico, more powerful cores, two alternative RiscV cores, three PIO units instead of two and 520Kb of RAM!
+
+This can be a game changer for LogicAnalyzer, only with the new ammount of RAM the quantity of samples is going to increase massively, we're talking about three times the current ammount of samples!
+
+Also, there are really exciting changes on the PIO side, the new IRQ system allows to intercomunicate the PIO units, this means that the trigger pins could be freed now, and this, as small change as it seems can be really amazing combined with the new third PIO unit... Think about this, a 64Mb dual SPI RAM running at 100Mhz connected to the two free pins and controlled at full speed by the third PIO unit... 
+
+I was preparing a release for this month but it's going to be delayed, once I receive the new Pico's I will start the development for the Pico 2 and once it's completed I will release all at once.
+
+Stay tuned!
+
+## RELEASE 5.1
+
+This release is a QoL release with some functional corrections. For more details check the release page.
 
 ## RELEASE 5.0, Burst mode is here!
 

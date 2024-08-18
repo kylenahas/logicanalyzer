@@ -1,4 +1,5 @@
 ﻿using System.IO.Ports;
+using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
@@ -10,6 +11,10 @@ namespace SharedDriver
 {
     public class LogicAnalyzerDriver : IDisposable, IAnalizerDriver
     {
+        const int MAJOR_VERSION = 5;
+        const int MINOR_VERSION = 1;
+
+
         Regex regVersion = new Regex(".*?(V([0-9]+)_([0-9]+))$");
         Regex regAddressPort = new Regex("([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\\:([0-9]+)");
         StreamReader readResponse;
@@ -19,6 +24,9 @@ namespace SharedDriver
         TcpClient tcpClient;
         string devAddr;
         ushort devPort;
+
+        public bool IsCapturing { get { return capturing; } }
+        public bool IsNetwork { get { return isNetwork; } }
 
         public object Tag { get; set; }
         public string? DeviceVersion { get; private set; }
@@ -76,20 +84,10 @@ namespace SharedDriver
             baseStream.ReadTimeout = 10000;
             DeviceVersion = readResponse.ReadLine();
 
-            var verMatch = regVersion.Match(DeviceVersion ?? "");
-
-            if (verMatch == null || !verMatch.Success || !verMatch.Groups[2].Success)
+            if (!ValidateVersion())
             {
                 Dispose();
-                throw new DeviceConnectionException($"Invalid device version V{ (string.IsNullOrWhiteSpace(verMatch?.Value) ? "(unknown)" : verMatch?.Value) }, minimum supported version: V5_0");
-            }
-
-            int majorVer = int.Parse(verMatch.Groups[2].Value);
-
-            if (majorVer < 5)
-            {
-                Dispose();
-                throw new DeviceConnectionException($"Invalid device version V{verMatch.Value}, minimum supported version: V5_0");
+                throw new DeviceConnectionException($"Invalid device version {DeviceVersion}, minimum supported version: V{MAJOR_VERSION}_{MINOR_VERSION}");
             }
 
             baseStream.ReadTimeout = Timeout.Infinite;
@@ -124,10 +122,38 @@ namespace SharedDriver
 
             baseStream.ReadTimeout = 10000;
             DeviceVersion = readResponse.ReadLine();
+            
+            if (!ValidateVersion())
+            {
+                Dispose();
+                throw new DeviceConnectionException($"Invalid device version {DeviceVersion}, minimum supported version: V{MAJOR_VERSION}_{MINOR_VERSION}");
+            }
+            
             baseStream.ReadTimeout = Timeout.Infinite;
-
+            
             isNetwork = true;
         }
+
+        private bool ValidateVersion()
+        {
+            var verMatch = regVersion.Match(DeviceVersion ?? "");
+
+            if (verMatch == null || !verMatch.Success || !verMatch.Groups[2].Success)
+                return false;
+
+            int majorVer = int.Parse(verMatch.Groups[2].Value);
+            int minorVer = int.Parse(verMatch.Groups[3].Value);
+
+            if (majorVer < MAJOR_VERSION)
+                return false;
+
+            if (majorVer == MAJOR_VERSION && minorVer < MINOR_VERSION)
+                return false;
+
+            return true;
+            
+        }
+
         public unsafe bool SendNetworkConfig(string AccesPointName, string Password, string IPAddress, ushort Port)
         {
             if(isNetwork) 
@@ -450,6 +476,24 @@ namespace SharedDriver
             return CaptureModes.Modes[mode];
         }
 
+        public string? GetVoltageStatus() 
+        {
+            if (!isNetwork)
+                return "UNSUPPORTED";
+
+            OutputPacket pack = new OutputPacket();
+            pack.AddByte(3);
+
+            baseStream.Write(pack.Serialize());
+            baseStream.Flush();
+
+            baseStream.ReadTimeout = Timeout.Infinite;
+            var result = readResponse.ReadLine();
+            baseStream.ReadTimeout = Timeout.Infinite;
+
+            return result;
+        }
+
         public void Dispose()
         {
             try
@@ -492,7 +536,6 @@ namespace SharedDriver
             readData = null;
             readData = null;
 
-            DeviceVersion = null;
             CaptureCompleted = null;
         }
       

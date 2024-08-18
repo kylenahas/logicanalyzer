@@ -1,8 +1,13 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.Shared.PlatformSupport;
 using Avalonia.Threading;
+using AvaloniaColorPicker;
 using AvaloniaEdit.Utils;
 using LogicAnalyzer.Classes;
 using LogicAnalyzer.Controls;
@@ -16,11 +21,15 @@ using SharedDriver;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Net.WebSockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using static System.Net.Mime.MediaTypeNames;
 
@@ -28,7 +37,7 @@ namespace LogicAnalyzer
 {
     public partial class MainWindow : PersistableWindowBase
     {
-        IAnalizerDriver driver;
+        IAnalizerDriver? driver;
         CaptureSettings settings;
 
         ProtocolAnalyzerLoader pLoader;
@@ -41,7 +50,7 @@ namespace LogicAnalyzer
         AnalysisSettings? analysisSettings;
 
         bool preserveSamples = false;
-
+        Timer tmrPower;
         public MainWindow()
         {
             Instance = this;
@@ -63,6 +72,8 @@ namespace LogicAnalyzer
             sampleMarker.SamplesInserted += SampleMarker_SamplesInserted;
             sampleMarker.SamplesDeleted += SampleMarker_SamplesDeleted;
 
+            channelViewer.ChannelClick += ChannelViewer_ChannelClick;
+
             tkInScreen.PropertyChanged += tkInScreen_ValueChanged;
             scrSamplePos.Scroll += scrSamplePos_ValueChanged;
             scrSamplePos.PointerEnter += ScrSamplePos_PointerEnter;
@@ -73,11 +84,87 @@ namespace LogicAnalyzer
             mnuExit.Click += MnuExit_Click;
             mnuExport.Click += MnuExport_Click;
             mnuNetSettings.Click += MnuNetSettings_Click;
-
+            mnuDocs.Click += MnuDocs_Click;
+            mnuAbout.Click += MnuAbout_Click;
             AddHandler(InputElement.KeyDownEvent, MainWindow_KeyDown, handledEventsToo: true);
 
             LoadAnalyzers();
             RefreshPorts();
+
+            tmrPower = new Timer((o) => 
+            {
+                Dispatcher.UIThread.InvokeAsync(() => 
+                {
+                    GetPowerStatus();
+                });
+            });
+        }
+
+        private async void ChannelViewer_ChannelClick(object? sender, ChannelEventArgs e)
+        {
+            var picker = new ColorPickerWindow();
+
+            if (e.Channel.ChannelColor != null)
+                picker.Color = e.Channel.ChannelColor.Value;
+            else
+                picker.Color = AnalyzerColors.FgChannelColors[e.Channel.ChannelNumber];
+
+            var color = await picker.ShowDialog(this);
+
+            if (color == null)
+                return;
+
+            e.Channel.ChannelColor = color;
+            (sender as TextBlock).Foreground = GraphicObjectsCache.GetBrush(color.Value);
+            samplePreviewer.UpdateSamples(channelViewer.Channels, sampleViewer.Samples);
+            sampleViewer.InvalidateVisual();
+        }
+
+        private async void MnuAbout_Click(object? sender, RoutedEventArgs e)
+        {
+            var aboutDialog = new AboutDialog();
+            await aboutDialog.ShowDialog(this);
+        }
+
+        private async void MnuDocs_Click(object? sender, RoutedEventArgs e)
+        {
+            try
+            {
+                OpenUrl("https://github.com/gusmanb/logicanalyzer/wiki");
+            }
+            catch 
+            { 
+                await this.ShowError("Cannot open page.", "Cannot start the default browser. You can access the online documentation in https://github.com/gusmanb/logicanalyzer/wiki");
+            }
+        }
+
+        private void OpenUrl(string url)
+        {
+            try
+            {
+                Process.Start(url);
+            }
+            catch
+            {
+                // hack because of this: https://github.com/dotnet/corefx/issues/10361
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    url = url.Replace("&", "^&");
+                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    Process.Start("xdg-open", url);
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    Process.Start("open", url);
+                }
+                else
+                {
+                    throw;
+                }
+            }
         }
 
         private void MainWindow_KeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
@@ -220,7 +307,7 @@ namespace LogicAnalyzer
                 sampleViewer.BeginUpdate();
                 sampleViewer.Samples = samples;
                 sampleViewer.EndUpdate();
-                samplePreviewer.UpdateSamples(samples, sampleViewer.ChannelCount);
+                samplePreviewer.UpdateSamples(channelViewer.Channels, samples);
                 samplePreviewer.ViewPosition = sampleViewer.FirstSample;
             }
         }
@@ -289,7 +376,7 @@ namespace LogicAnalyzer
                 sampleViewer.BeginUpdate();
                 sampleViewer.Samples = samples;
                 sampleViewer.PreSamples = settings.PreTriggerSamples;
-                sampleViewer.ChannelCount = settings.CaptureChannels.Length;
+                sampleViewer.Channels = settings.CaptureChannels;
                 sampleViewer.SamplesInScreen = Math.Min(100, samples.Length / 10);
                 sampleViewer.FirstSample = Math.Max(settings.PreTriggerSamples - 10, 0);
                 sampleViewer.ClearRegions();
@@ -297,18 +384,19 @@ namespace LogicAnalyzer
 
                 sampleViewer.EndUpdate();
 
+                channelViewer.Channels = settings.CaptureChannels;
+
                 samplePreviewer.ViewPosition = sampleViewer.FirstSample;
-                samplePreviewer.UpdateSamples(samples, sampleViewer.ChannelCount);
+                samplePreviewer.UpdateSamples(channelViewer.Channels, samples);
 
                 sampleMarker.VisibleSamples = sampleViewer.SamplesInScreen;
                 sampleMarker.FirstSample = sampleViewer.FirstSample;
                 sampleMarker.ClearRegions();
+                sampleMarker.ClearAnalyzedChannels();
 
                 scrSamplePos.Maximum = samples.Length - 1;
                 scrSamplePos.Value = sampleViewer.FirstSample;
                 tkInScreen.Value = sampleViewer.SamplesInScreen;
-
-                channelViewer.Channels = settings.CaptureChannels;
 
                 mnuSave.IsEnabled = true;
                 mnuProtocols.IsEnabled = true;
@@ -523,12 +611,13 @@ namespace LogicAnalyzer
 
             sampleViewer.EndUpdate();
 
-            samplePreviewer.UpdateSamples(finalSamples, sampleViewer.ChannelCount);
+            samplePreviewer.UpdateSamples(channelViewer.Channels, finalSamples);
             samplePreviewer.ViewPosition = sampleViewer.FirstSample;
 
             sampleMarker.VisibleSamples = sampleViewer.SamplesInScreen;
             sampleMarker.FirstSample = sampleViewer.FirstSample;
             sampleMarker.ClearRegions();
+            sampleMarker.ClearAnalyzedChannels();
 
             if (finalRegions.Count > 0)
                 sampleMarker.AddRegions(finalRegions);
@@ -565,7 +654,7 @@ namespace LogicAnalyzer
 
             List<byte[]> samples = new List<byte[]>();
 
-            for (int buc = 0; buc < sampleViewer.ChannelCount; buc++)
+            for (int buc = 0; buc < (sampleViewer.Channels?.Length ?? 0); buc++)
                 samples.Add(ExtractSamples(buc, sampleViewer.Samples, e.FirstSample, e.SampleCount));
 
             var names = channelViewer.Channels.Select(c => c.ChannelName).ToArray();
@@ -664,7 +753,7 @@ namespace LogicAnalyzer
                 sampleViewer.BeginUpdate();
                 sampleViewer.Samples = e.Samples;
                 sampleViewer.PreSamples = e.PreSamples;
-                sampleViewer.ChannelCount = e.ChannelCount;
+                sampleViewer.Channels = settings.CaptureChannels;
 
                 if(!preserveSamples)
                     sampleViewer.SamplesInScreen = Math.Min(100, e.Samples.Length / 10);
@@ -691,18 +780,19 @@ namespace LogicAnalyzer
                 sampleViewer.ClearAnalyzedChannels();
                 sampleViewer.EndUpdate();
 
-                samplePreviewer.UpdateSamples(e.Samples, sampleViewer.ChannelCount);
+                channelViewer.Channels = settings.CaptureChannels;
+
+                samplePreviewer.UpdateSamples(channelViewer.Channels, e.Samples);
                 samplePreviewer.ViewPosition = sampleViewer.FirstSample;
 
                 scrSamplePos.Maximum = e.Samples.Length - 1;
                 scrSamplePos.Value = sampleViewer.FirstSample;
                 tkInScreen.Value = sampleViewer.SamplesInScreen;
 
-                channelViewer.Channels = settings.CaptureChannels;
-
                 sampleMarker.VisibleSamples = sampleViewer.SamplesInScreen;
                 sampleMarker.FirstSample = sampleViewer.FirstSample;
                 sampleMarker.ClearRegions();
+                sampleMarker.ClearAnalyzedChannels();
 
                 btnCapture.IsEnabled = true;
                 btnRepeat.IsEnabled = true;
@@ -713,7 +803,7 @@ namespace LogicAnalyzer
                 mnuExport.IsEnabled = true;
                 mnuSettings.IsEnabled = driver.DriverType == AnalyzerDriverType.Serial && (driver.DeviceVersion?.Contains("WIFI") ?? false);
                 LoadInfo();
-
+                GetPowerStatus();
             });
         }
 
@@ -725,7 +815,19 @@ namespace LogicAnalyzer
 
         void LoadAnalyzers()
         {
-            pLoader = new ProtocolAnalyzerLoader(Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "analyzers"));
+
+            string path = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "analyzers");
+
+            if(!Directory.Exists(path))
+                path = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "Analyzers");
+
+            if (!Directory.Exists(path))
+            {
+                mnuProtocols.Items = new MenuItem[] { new MenuItem { Header = "<- None ->" } };
+                return;
+            }
+
+            pLoader = new ProtocolAnalyzerLoader(path);
 
             var protocols = pLoader.ProtocolNames;
             mnuProtocols.Items = null;
@@ -777,6 +879,9 @@ namespace LogicAnalyzer
                 sampleViewer.BeginUpdate();
                 sampleViewer.AddAnalyzedChannels(analysisResult);
                 sampleViewer.EndUpdate();
+                sampleMarker.BeginUpdate();
+                sampleMarker.AddAnalyzedChannels(analysisResult);
+                sampleMarker.EndUpdate();
             }
         }
 
@@ -785,6 +890,9 @@ namespace LogicAnalyzer
             sampleViewer.BeginUpdate();
             sampleViewer.ClearAnalyzedChannels();
             sampleViewer.EndUpdate();
+            sampleMarker.BeginUpdate();
+            sampleMarker.ClearAnalyzedChannels();
+            sampleMarker.EndUpdate();
         }
 
         private async void ProtocolAnalyzer_Click(object? sender, RoutedEventArgs e)
@@ -798,8 +906,24 @@ namespace LogicAnalyzer
 
             var dlg = new ProtocolAnalyzerSettingsDialog();
             {
+
+                if (analysisSettings != null && analysisSettings.Analyzer == analyzer)
+                    dlg.InitialSettings = analysisSettings;
+
                 dlg.Analyzer = analyzer;
-                dlg.Channels = channelViewer.Channels.Select(c => c.ChannelNumber).ToArray();
+                dlg.Channels = channelViewer.Channels.Select(c => 
+                {
+                    var ch = new ProtocolAnalyzerSettingsDialog.Channel 
+                    { 
+                        ChannelIndex = c.ChannelNumber, 
+                        ChannelName = string.IsNullOrWhiteSpace(c.ChannelName) ? 
+                        $"Channel {c.ChannelNumber + 1}" : 
+                        c.ChannelName 
+                    };
+
+                    return ch; 
+                
+                }).ToArray();
 
                 if (await dlg.ShowDialog<bool>(this) != true)
                     return;
@@ -820,6 +944,10 @@ namespace LogicAnalyzer
                     sampleViewer.BeginUpdate();
                     sampleViewer.AddAnalyzedChannels(analysisResult);
                     sampleViewer.EndUpdate();
+
+                    sampleMarker.BeginUpdate();
+                    sampleMarker.AddAnalyzedChannels(analysisResult);
+                    sampleMarker.EndUpdate();
                 }
 
                 analysisSettings = new AnalysisSettings { Analyzer = analyzer, Channels = channels, Settings = dlg.SelectedSettings };
@@ -892,6 +1020,7 @@ namespace LogicAnalyzer
                 btnCapture.IsEnabled = true;
                 btnRepeat.IsEnabled = true;
                 mnuSettings.IsEnabled = driver.DriverType == AnalyzerDriverType.Serial && (driver.DeviceVersion?.Contains("WIFI") ?? false);
+                tmrPower.Change(30000, Timeout.Infinite);
             }
             else
             {
@@ -905,9 +1034,48 @@ namespace LogicAnalyzer
                 btnCapture.IsEnabled = false;
                 btnRepeat.IsEnabled = false;
                 mnuSettings.IsEnabled = false;
+                tmrPower.Change(Timeout.Infinite, Timeout.Infinite);
             }
+
+            GetPowerStatus();
         }
 
+        void GetPowerStatus()
+        {
+            if (driver == null || !driver.IsNetwork)
+            {
+                pnlPower.IsVisible = false;
+                return;
+            }
+
+            if(driver.IsCapturing)
+                return;
+
+            var powerStatus = driver.GetVoltageStatus();
+
+            if (string.IsNullOrWhiteSpace(powerStatus) || powerStatus == "UNSUPPORTED")
+            {
+                pnlPower.IsVisible = false;
+                return;
+            }
+
+            string[] parts = powerStatus.Split("_");
+
+            if(parts.Length == 2 ) 
+            {
+                lblVoltage.Text = parts[0];
+
+                var assets = AvaloniaLocator.Current.GetService<IAssetLoader>();
+                using var str = assets.Open(new Uri(parts[1] == "1" ? "avares://LogicAnalyzer/Assets/plug.png" : "avares://LogicAnalyzer/Assets/battery.png"));
+                Bitmap bmp = new Bitmap(str);
+                var oldSrc = imgPowerSource.Source;
+                imgPowerSource.Source = bmp;
+                pnlPower.IsVisible = true;
+                if (oldSrc is IDisposable)
+                    ((IDisposable)oldSrc).Dispose();
+            }
+                    
+        }
         private void btnRefresh_Click(object? sender, RoutedEventArgs e)
         {
             RefreshPorts();
@@ -934,13 +1102,26 @@ namespace LogicAnalyzer
         {
             var dialog = new CaptureDialog();
             dialog.Initialize(driver);
-
             if (!await dialog.ShowDialog<bool>(this))
                 return;
 
             settings = dialog.SelectedSettings;
             preserveSamples = false;
-            BeginCapture();
+            
+            tmrPower.Change(Timeout.Infinite, Timeout.Infinite);
+
+            try
+            {
+                BeginCapture();
+
+                var settingsFile = $"cpSettings{driver.DriverType}.json";
+                AppSettingsManager.PersistSettings(settingsFile, settings);
+
+            }
+            finally 
+            { 
+                tmrPower.Change(30000, Timeout.Infinite); 
+            }
 
         }
 
@@ -1139,7 +1320,7 @@ namespace LogicAnalyzer
                     sampleViewer.BeginUpdate();
                     sampleViewer.Samples = ex.Samples;
                     sampleViewer.PreSamples = ex.Settings.PreTriggerSamples;
-                    sampleViewer.ChannelCount = ex.Settings.CaptureChannels.Length;
+                    sampleViewer.Channels = ex.Settings.CaptureChannels;
                     sampleViewer.SamplesInScreen = Math.Min(100, ex.Samples.Length / 10);
                     sampleViewer.FirstSample = Math.Max(ex.Settings.PreTriggerSamples - 10, 0);
                     sampleViewer.ClearRegions();
@@ -1150,12 +1331,15 @@ namespace LogicAnalyzer
 
                     sampleViewer.EndUpdate();
 
-                    samplePreviewer.UpdateSamples(ex.Samples, sampleViewer.ChannelCount);
+                    channelViewer.Channels = ex.Settings.CaptureChannels;
+
+                    samplePreviewer.UpdateSamples(channelViewer.Channels, ex.Samples);
                     samplePreviewer.ViewPosition = sampleViewer.FirstSample;
 
                     sampleMarker.VisibleSamples = sampleViewer.SamplesInScreen;
                     sampleMarker.FirstSample = sampleViewer.FirstSample;
                     sampleMarker.ClearRegions();
+                    sampleMarker.ClearAnalyzedChannels();
 
                     if (ex.SelectedRegions != null)
                         sampleMarker.AddRegions(ex.SelectedRegions);
@@ -1164,7 +1348,7 @@ namespace LogicAnalyzer
                     scrSamplePos.Value = sampleViewer.FirstSample;
                     tkInScreen.Value = sampleViewer.SamplesInScreen;
 
-                    channelViewer.Channels = ex.Settings.CaptureChannels;
+                    
 
                     mnuSave.IsEnabled = true;
                     mnuProtocols.IsEnabled = true;

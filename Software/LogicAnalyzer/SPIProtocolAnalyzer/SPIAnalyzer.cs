@@ -148,7 +148,7 @@ namespace SPIProtocolAnalyzer
                 var clockRange = ckChannel.Samples.Skip(range.FirstSample).Take(range.Length).ToArray();
                 var dataRange = dataChannel.Samples.Skip(range.FirstSample).Take(range.Length).ToArray();
 
-                int firstClockSample = FindFirstSampleClock(clockRange, cpol, cpha);
+                int firstClockSample = FindFirstSampleClock(0, clockRange, cpol, cpha);
 
                 if (firstClockSample == -1)
                 {
@@ -169,12 +169,12 @@ namespace SPIProtocolAnalyzer
                         ProtocolAnalyzerDataSegment segment = new ProtocolAnalyzerDataSegment { FirstSample = range.FirstSample + firstClockSample, LastSample = range.FirstSample + lastSample, Value = $"0x{value.ToString("X2")} '{asciival}'" };
                         segments.Add(segment);
 
-                        firstClockSample = FindSample(lastSample, clockRange, cpha == 0 ? 1 : 0);
+                        firstClockSample = FindFirstSampleClock(lastSample, clockRange, cpol, cpha);
 
                         if (firstClockSample == -1)
                             value = -1;
                         else
-                            value = GetByte(lastSample, clockRange, dataRange, shiftOrder, cpha, out lastSample);
+                            value = GetByte(firstClockSample, clockRange, dataRange, shiftOrder, cpha, out lastSample);
 
                     }
                 }
@@ -192,7 +192,9 @@ namespace SPIProtocolAnalyzer
 
             int currentSample = firstClockSample;
 
-            for (int buc = 0; buc < 8; buc++)
+            values[0] = dataRange[firstClockSample];
+
+            for (int buc = 1; buc < 8; buc++)
             {
                 if (currentSample == -1)
                     return -1;
@@ -236,12 +238,14 @@ namespace SPIProtocolAnalyzer
             return value;
         }
 
-        private int FindFirstSampleClock(byte[] clockRange, int cpol, int cpha)
+        private int FindFirstSampleClock(int start, byte[] clockRange, int cpol, int cpha)
         {
+            int pos = start;
+
             if (cpol == 0 && cpha == 0)
             {
                 //Low-high
-                int pos = FindSample(0, clockRange, 0);
+                pos = FindSample(pos, clockRange, 0);
 
                 if (pos == -1)
                     return -1;
@@ -252,7 +256,7 @@ namespace SPIProtocolAnalyzer
             else if (cpol == 0 && cpha == 1)
             {
                 //Low-high-low
-                int pos = FindSample(0, clockRange, 0);
+                pos = FindSample(pos, clockRange, 0);
 
                 if (pos == -1)
                     return -1;
@@ -266,8 +270,21 @@ namespace SPIProtocolAnalyzer
             }
             else if (cpol == 1 && cpha == 0)
             {
-                //High-low-high
-                int pos = FindSample(0, clockRange, 1);
+                //High-low
+                pos = FindSample(pos, clockRange, 1);
+
+                if (pos == -1)
+                    return -1;
+
+
+                return FindSample(pos, clockRange, 0);
+
+            }
+            else if (cpol == 1 && cpha == 1)
+            {
+                //High-log-high
+
+                pos = FindSample(pos, clockRange, 1);
 
                 if (pos == -1)
                     return -1;
@@ -278,26 +295,7 @@ namespace SPIProtocolAnalyzer
                     return -1;
 
                 return FindSample(pos, clockRange, 1);
-            }
-            else if (cpol == 1 && cpha == 1)
-            {
-                //High-low-high-low
-                int pos = FindSample(0, clockRange, 1);
 
-                if (pos == -1)
-                    return -1;
-
-                pos = FindSample(pos, clockRange, 0);
-
-                if (pos == -1)
-                    return -1;
-
-                pos = FindSample(pos, clockRange, 1);
-
-                if (pos == -1)
-                    return -1;
-
-                return FindSample(pos, clockRange, 0);
             }
 
             return -1;
@@ -326,9 +324,9 @@ namespace SPIProtocolAnalyzer
                 if (csChannel.Samples[buc] == 0)
                 {
                     if (underConstruction == null)
-                        underConstruction = new ActiveRange { FirstSample = buc };
+                        underConstruction = new ActiveRange { FirstSample = buc, LastSample = buc };
                     else
-                        continue;
+                        underConstruction.LastSample = buc;
                 }
                 else
                 {
@@ -340,6 +338,12 @@ namespace SPIProtocolAnalyzer
                     underConstruction = null;
                 }
 
+            }
+
+            if (underConstruction != null)
+            {
+                ranges.Add(underConstruction);
+                underConstruction = null;
             }
 
             return ranges;
